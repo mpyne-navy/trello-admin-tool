@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+    <!-- Copyright 2020 Michael Pyne. See COPYING for terms of redistribution. -->
+    <!-- SPDX-License-Identifier: GPL-3.0-only -->
+<head>
+    <meta charset="utf-8" />
+    <title>Trello Assistant Tool</title>
+
+<style>
+div#status_pane {
+    font-size:smaller;
+    margin-top: 4em;
+    padding: 4px;
+    background: black;
+    color: white;
+}
+
+html, body {
+    width: 100%;
+    height: 100%;
+    padding: 0;
+    margin: 0;
+}
+
+/* See https://dev.to/domysee/keeping-the-footer-at-the-bottom-with-css-flexbox-5h5f */
+section {
+    min-height: 100%;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+}
+
+section > header {
+    padding-bottom: 16px;
+    padding-left: 8px;
+    padding-right: 8px;
+}
+
+#tool_pane {
+    flex-grow: 1;
+    padding-left: 8px;
+    padding-right: 8px;
+}
+
+header, #tool_pane, #status_pane {
+    flex-shrink: 0;
+}
+</style>
+
+</head>
+
+<body>
+    <section>
+        <header>
+            <h2>Trello Assistant Tool</h2>
+            <label>Enter your Trello API key:
+                <input id="trello_api_key" autofocus pattern="[0-9a-fA-F]+" maxlength="40" minlength="32"/>
+            </label>
+
+            <button id="btn_load_clientjs">Load Trello Client (may require auth)</button>
+        </header>
+
+        <div id="tool_pane">
+            <div id="banner_nothing_loaded">No tools loaded</div>
+
+            <div id="user_info"></div>
+            <div id="tool_boards" style="display:none">
+                <button id="btn_load_boards">Load Boards</button>
+                <button id="btn_board_audit">Audit Loaded Boards</button>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>URL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tbl_body_boards">
+                    </tbody>
+                </table>
+
+                <button id="btn_create_board">Create a new board</button>
+            </div>
+        </div>
+
+        <div id="status_pane">
+            Status pane
+        </div>
+    </section>
+
+    <script src="jquery-3.4.1.min.js"></script>
+
+    <script>
+        const statusDiv = document.getElementById('status_pane');
+        const updateStatus = newStatus => { console.log(newStatus); statusDiv.textContent = newStatus; };
+        let tryToAuthorize; // forward decl for a function
+        let numAttempts = 0;
+
+        const showError = (error) => {
+            updateStatus('API call failed');
+            console.error(error);
+
+            if (window.Trello && window.Trello.authorized()) {
+                console.log("Deauthorizing token");
+                window.Trello.deauthorize();
+                tryToAuthorize();
+            }
+        };
+
+        tryToAuthorize = () => {
+            if(++numAttempts >= 3) {
+                updateStatus("Too many attempts, stopping now.");
+                return;
+            }
+
+            Trello.authorize({
+                "interactive": false, // Grabs the token on redirect if we're authorized
+                "success": () => {
+                    updateStatus('Authorized to Trello, token available, doing lookup');
+                    Trello.members.get('me', { "fields": "username,email,fullName,prefs,products" },
+                        (result) => {
+                            updateStatus('Successful lookup on logged-in user');
+                            console.log(result);
+
+                            document.getElementById('user_info').textContent = `Name: ${result.fullName}, ID: ${result.id}`;
+                            document.getElementById('tool_boards').style.display = 'block'; // Show the boards panel
+                            const bannerDiv = document.getElementById('banner_nothing_loaded');
+                            bannerDiv.remove();
+                        },
+                        showError
+                    )
+                },
+                "error":   () => {
+                    updateStatus('No token already persisted, will ask Trello website for new token');
+                    Trello.authorize({
+                        "name": "Trello admin aid",
+                        "expiration": "1hour",
+                        scope: {
+                            read: true,
+                            write: true,
+                            account: false,
+                        },
+                    });
+                },
+            });
+        };
+
+        const onTrelloLoaded = () => {
+            updateStatus('Trello client.js loaded successfully, now authorizing to Trello');
+            tryToAuthorize();
+        }
+
+        const btnLoadClient = document.getElementById('btn_load_clientjs');
+        btnLoadClient.addEventListener('click', (e) => {
+            // API key should be set, go ahead and use it to construct a URL and load the Trello JS.
+            const key = document.getElementById('trello_api_key').value;
+            if (!key) {
+                throw `Invalid key ${key}!`;
+            }
+
+            const clientJSURL = `https://trello.com/1/client.js?key=${encodeURIComponent(key)}`;
+            updateStatus(`Making request to load ${clientJSURL}`);
+
+            const toolDiv = document.getElementById('tool_pane');
+            let scriptEl = document.createElement('script');
+            scriptEl.onerror = (err) => { updateStatus(`Error: ${err}`); };
+            scriptEl.onload = onTrelloLoaded;
+            scriptEl.async = true;
+
+            toolDiv.appendChild(scriptEl);
+            scriptEl.src = clientJSURL;
+        });
+
+        //
+        // Boards
+        //
+        const showBoards = (results) => {
+            // Should be an array of Trello board objects
+            const curBoardTable = document.getElementById('tbl_body_boards');
+            let boardTable = curBoardTable.cloneNode(false); // shallow, no children
+
+            results.forEach(board => {
+                const newRow = document.createElement('tr');
+
+                const cellID = document.createElement('td');
+                const cellName = document.createElement('td');
+                const cellURL = document.createElement('td');
+                const cellURLLink = document.createElement('a');
+
+                cellID.textContent = board.id;
+                cellName.textContent  = board.name;
+                cellURLLink.href = board.url;
+                cellURLLink.textContent = board.url;
+                cellURL.appendChild(cellURLLink);
+
+                newRow.appendChild(cellID);
+                newRow.appendChild(cellName);
+                newRow.appendChild(cellURL);
+
+                boardTable.appendChild(newRow);
+            });
+
+            curBoardTable.replaceWith(boardTable);
+            updateStatus('Loaded Trello boards.');
+        };
+        const loadBoards = (id) => {
+            Trello.get('members/me/boards', { "fields": "id,name,url", "lists": "open" }, showBoards, showError);
+        }
+        const btnLoadBoards = document.getElementById('btn_load_boards');
+        btnLoadBoards.addEventListener('click', loadBoards);
+
+        const btnCreateBoard = document.getElementById('btn_create_board');
+        btnCreateBoard.addEventListener('click', () => {
+            if (!window.Trello || !Trello.authorized()) {
+                updateStatus("Not logged into Trello??");
+                return;
+            }
+
+            const boardName = window.prompt('What name to give to the new Board?', 'GO NAVY');
+            if (boardName === "GO NAVY" || !boardName) {
+                updateStatus("Pick a better board name");
+                return;
+            }
+
+            Trello.post('boards', {
+                name: boardName,
+                defaultLists: true,
+                prefs_permissionLevel: "private",
+                prefs_invitations: "admins",
+                prefs_comments: "members",
+                prefs_voting: "disabled",
+                prefs_selfJoin: false,
+            },
+            (result) => {
+                updateStatus(`Board ${boardName} created, apparently successfully?`);
+                console.log(result);
+
+                window.setTimeout(loadBoards, 2000);
+
+                // TODO: Complete board setup, admin member enrollment here
+            },
+            showError
+            );
+        });
+
+        // Searches whether the user identified by user_id is on the board
+        // provided (as an admin)
+        const auditBoard = (board, user_id) => {
+            console.log("Unimplemented.");
+        };
+
+        const btnAuditBoards = document.getElementById('btn_board_audit');
+        btnAuditBoards.addEventListener('click', () => {
+            updateStatus('Board audit not implemented yet.');
+        });
+
+    </script>
+</body>
+</html>
